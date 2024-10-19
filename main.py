@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torchvision
 import argparse
+from PIL import Image
 
 # distributed training
 import torch.distributed as dist
@@ -21,6 +22,86 @@ from simclr.modules.sync_batchnorm import convert_model
 
 from model import load_optimizer, save_model
 from utils import yaml_config_hook
+
+import os
+import numpy as np
+import random
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset
+#Define the split ratio
+split_ratio = 0.6
+
+#Dataset function called
+class Birddataset(Dataset):
+    def __init__(self, image_dir, allowed_classes, transform=None, dataset_type = None):
+        """
+        Args:
+            image_dir (str): Directory path containing input images.
+            mask_dir (str): Directory path containing corresponding segmentation masks.
+            transform (callable): Optional transformation to be applied to both the image and the mask. . Use ToTensorV2()
+            dataset_type (str, optional): Type of dataset, e.g., 'Train' or 'Test'. Defaults to 'Train'.
+        """
+        # Initialize paths and transformation
+        self.allowed_classes=allowed_classes
+        self.image_dir = image_dir
+        self.dataset_type = dataset_type
+        self.transform = transform
+        self.classes = [item for item in os.listdir(self.image_dir) if os.path.isdir(os.path.join(self.image_dir, item))]
+        self.samples=[]
+        for class_name in self.classes:
+                if class_name in allowed_classes:
+
+                    self.images = os.listdir(os.path.join(self.image_dir, class_name))
+                    for img in self.images:
+                        self.samples.append([img,class_name])
+
+        random.seed(87)
+        random.shuffle(self.samples)
+
+        # print(self.samples)
+
+        if dataset_type == 'Train':
+            self.images = self.samples[:int(len(self.samples)*split_ratio)]
+        elif dataset_type == 'Test':
+            self.images = self.samples[int(len(self.samples)*split_ratio):]
+        else:
+            self.images = self.samples
+
+    def __len__(self) -> int:
+        """
+        Returns:
+            int: The total number of image-mask pairs in the designated dataset split.
+        """
+        # Return the length of the dataset (number of images)
+        return len(self.images)
+
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            index (int): Index of the image-mask pair to retrieve.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing the image and its corresponding one-hot encoded mask.
+                - image (torch.Tensor): Transformed image tensor.
+                - onehot_mask (torch.Tensor): One-hot encoded mask tensor for segmentation.
+        """
+        # Load the image and mask
+        image_path = os.path.join(self.image_dir,self.images[index][1],self.images[index][0])
+
+
+
+        # Load image and mask as grayscale
+        image = Image.open(image_path)
+        if self.transform:
+            transformed = self.transform(image)
+
+        class_id = self.allowed_classes.index(self.images[index][1])
+
+        return transformed, class_id
+
+
 
 
 def train(args, train_loader, model, criterion, optimizer, writer):
@@ -63,21 +144,28 @@ def main(gpu, args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    if args.dataset == "STL10":
-        train_dataset = torchvision.datasets.STL10(
-            args.dataset_dir,
-            split="unlabeled",
-            download=True,
-            transform=TransformsSimCLR(size=args.image_size),
-        )
-    elif args.dataset == "CIFAR10":
-        train_dataset = torchvision.datasets.CIFAR10(
-            args.dataset_dir,
-            download=True,
-            transform=TransformsSimCLR(size=args.image_size),
-        )
-    else:
-        raise NotImplementedError
+    # if args.dataset == "STL10":
+    #     train_dataset = torchvision.datasets.STL10(
+    #         args.dataset_dir,
+    #         split="unlabeled",
+    #         download=True,
+    #         transform=TransformsSimCLR(size=args.image_size),
+    #     )
+    if args.dataset == "ME":
+        # print()
+        train_dataset = Birddataset(
+            image_dir="/kaggle/working//Noisy_birds",
+            allowed_classes=["unlabeled"],
+            transform=TransformsSimCLR(size=128),
+            )
+    # elif args.dataset == "CIFAR10":
+    #     train_dataset = torchvision.datasets.CIFAR10(
+    #         args.dataset_dir,
+    #         download=True,
+    #         transform=TransformsSimCLR(size=args.image_size),
+    #     )
+    # else:
+    #     raise NotImplementedError
 
     if args.nodes > 1:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
